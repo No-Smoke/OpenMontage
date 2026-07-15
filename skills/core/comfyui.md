@@ -67,8 +67,24 @@ on a 20GB card. **Prefer `wan21-1.3b-t2v.json` (below) for routine use.**
 
 `tools/_comfyui/workflows/wan21-1.3b-t2v.json` — a single-UNET WAN 2.1 T2V
 workflow (no dual-expert split, no LoRA acceleration needed). Validated
-end-to-end against CT207 on 2026-07-15: completed in well under a minute,
-832×480 output, real H.264 mp4. Requires only
+end-to-end against CT207 on 2026-07-15 with two real generations:
+
+| Frames | Steps | Wall time (`Prompt executed in`) |
+|---|---|---|
+| 33 | 20 | 11m21s |
+| 65 | 35 | 20m58s |
+
+Scale expectations roughly with frame count × step count, though with
+diminishing per-step cost as batch size grows (steady-state per-step time
+drops from ~10s/it at 33 frames to ~19s/it at 65 frames — NOT simply
+proportional, so don't linearly extrapolate for very different frame/step
+combos). Both runs produced real 832×480 H.264 mp4s. Still far more
+reliable than the bundled 14B dual-expert workflow (20-30+ minutes and past
+RAM risk), but "reliable" here means single-digit-to-teens minutes, not
+seconds — plan generation time accordingly. **A follow-up research task
+(see project memory / spawned task) is queued to investigate making the
+14B workflow fast without the swap penalty — deferred, not started.**
+Requires only
 `wan2.1_t2v_1.3B_fp16.safetensors` (2.8GB — far smaller than the WAN 2.2
 14B stack) plus the already-shared `umt5_xxl_fp8_e4m3fn_scaled.safetensors`
 text encoder and `wan_2.1_vae.safetensors` VAE.

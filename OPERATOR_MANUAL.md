@@ -50,8 +50,10 @@ video generation as of 2026-07-15 (WAN 2.2 T2V + I2V model weights
 installed, ~190GB disk quota, 40GB RAM quota).
 
 **Settled default model:** `wan2.1_t2v_1.3B_fp16.safetensors` via the custom
-workflow `tools/_comfyui/workflows/wan21-1.3b-t2v.json` — fast (well under a
-minute per clip), reliable, no VRAM/RAM pressure. The bundled WAN 2.2 14B
+workflow `tools/_comfyui/workflows/wan21-1.3b-t2v.json` — reliable, no
+VRAM/RAM pressure, and much faster than the alternative, but still takes
+roughly 10-15 minutes for a short clip (not seconds — scale expectations
+with frame/step count). The bundled WAN 2.2 14B
 dual-expert workflow (`wan22-t2v-4step.json`) works but is NOT the default
 recommendation: it loads ~28GB of combined weights against CT207's 20GB
 VRAM, forcing heavy CPU-offload swapping that both slows generation to
