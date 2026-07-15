@@ -19,7 +19,8 @@ governance system's cost cap.
 
 | Situation | Prefer |
 |---|---|
-| GPU has ≥16GB VRAM available on the ComfyUI host | **ComfyUI** — bundled WAN 2.2 14B FP8 workflow is the highest local quality OpenMontage ships |
+| Need fast, reliable video gen and don't need top-tier quality | **ComfyUI, custom `wan21-1.3b-t2v.json` workflow** (see below) — validated working, single small UNET, no dual-expert VRAM/RAM pressure. This is the settled default recommendation as of 2026-07-15. |
+| Need the highest local quality and have patience + a host with generous RAM | **ComfyUI, bundled WAN 2.2 14B FP8 workflow** — see the RAM lesson below before using this on a memory-constrained host |
 | GPU has 8GB VRAM and only the local host (no remote ComfyUI server) | **`wan_video` / `cogvideo_video`** in principle, but see the VRAM warning below — in practice these diffusers models frequently OOM on 8GB cards even though their declared `vram_mb` suggests they fit. Prefer routing to a ComfyUI server with more headroom when one is reachable. |
 | Need a specific community workflow (ControlNet, LoRA stack, upscaling chain) | **ComfyUI** via `workflow_json`/`workflow_path` + `output_node` — both tools accept a fully custom API-format workflow |
 | No ComfyUI server reachable anywhere on the network | Fall back to `fallback_tools` (`wan_video`, `hunyuan_video`, `ltx_video_local`, `kling_video` for video; `flux_image`, `local_diffusion`, `openai_image` for images) |
@@ -40,6 +41,45 @@ the common case" rather than as a working tier. This is exactly why the
 ComfyUI-on-a-bigger-GPU path exists — don't burn time re-debugging diffusers
 OOMs on an 8GB card before checking whether a remote ComfyUI server with more
 headroom is reachable.
+
+### Hard RAM lesson — bundled WAN 2.2 14B dual-expert workflow (2026-07-15)
+
+Even with 20GB VRAM, the bundled `wan22-t2v-4step.json`/`wan22-i2v-4step.json`
+workflows loaded **both** the high-noise and low-noise 14B UNETs
+simultaneously (~28GB combined weights) against CT207's RX 7900 XT (20GB
+VRAM). ComfyUI handled the VRAM overflow by CPU-offloading ~6.5GB of weights
+and swapping them in/out per layer — which pushed the ComfyUI process's
+**system RAM** usage past CT207's LXC memory limit (was 24GB) and the kernel
+OOM-killed it (`dmesg`: `Memory cgroup out of memory: Killed process ...
+anon-rss:24800220kB`). Docker's `unless-stopped` restart policy silently
+restarted the container afterward, which looks identical to a random crash
+unless you check `dmesg` — do not assume "container keeps restarting" means
+a ComfyUI-Manager auto-update; check for OOM kills first.
+
+Fix applied: `pct set 207 -memory 40960` (24GB → 40GB, applies live to the
+LXC cgroup, no restart needed — verify via `cat
+/sys/fs/cgroup/lxc/207/memory.max` on the Proxmox host). Even with that
+fix, a single 4-step sampling pass took 30+ minutes due to the CPU↔GPU
+weight-swapping overhead — the dual-expert 14B workflow is usable but slow
+on a 20GB card. **Prefer `wan21-1.3b-t2v.json` (below) for routine use.**
+
+### Settled default: WAN 2.1 1.3B custom workflow
+
+`tools/_comfyui/workflows/wan21-1.3b-t2v.json` — a single-UNET WAN 2.1 T2V
+workflow (no dual-expert split, no LoRA acceleration needed). Validated
+end-to-end against CT207 on 2026-07-15: completed in well under a minute,
+832×480 output, real H.264 mp4. Requires only
+`wan2.1_t2v_1.3B_fp16.safetensors` (2.8GB — far smaller than the WAN 2.2
+14B stack) plus the already-shared `umt5_xxl_fp8_e4m3fn_scaled.safetensors`
+text encoder and `wan_2.1_vae.safetensors` VAE.
+
+Use via `comfyui_video.execute()` with `workflow_path` (or read+`workflow_json`)
+pointed at this file, `output_node="11"`, and patch node `"2"` (positive
+prompt), `"7"` (width/height/batch_size=num_frames), and `"8"` (seed) as
+needed — same patching pattern as `ComfyUIClient.patch_workflow()` uses for
+the bundled workflows. `comfyui_video.py`'s built-in `_build_t2v`/`_build_i2v`
+only construct the bundled WAN 2.2 workflow; this file is not (yet) wired
+into that helper, so pass it explicitly per-call.
 
 ## Configuration
 
@@ -73,18 +113,19 @@ check. If the server is unreachable, `execute()` fails fast with
   These work today via a **custom** `workflow_json` (see below) — the
   bundled `flux2-txt2img.json` workflow does NOT match these checkpoints
   (FLUX uses `UNETLoader`/`DualCLIPLoader`, not `CheckpointLoaderSimple`).
-- **Video models: none installed.** `models/diffusion_models`, `models/unet`,
-  `models/text_encoders`, `models/vae` are all empty (just ComfyUI's default
-  `put_..._here` placeholder files). The bundled `wan22-t2v-4step.json` /
-  `wan22-i2v-4step.json` workflows reference WAN 2.2 14B FP8 weights that
-  are not present, so `comfyui_video` will return `success=False` with
-  `data.missing_models` (see `_REQUIRED_MODELS_T2V`/`_REQUIRED_MODELS_I2V`
-  in `tools/video/comfyui_video.py`) until someone downloads them onto CT 207
-  (`tools/_comfyui/metadata.py` → `BUNDLED_MODEL_STACKS` has the exact
-  filenames and HuggingFace URLs). This is a real, sizable download
-  (WAN 2.2 14B FP8 weights run tens of GB) — confirm with the user and their
-  available disk/bandwidth on CT 207 before triggering it, it is not
-  something to do silently.
+- **Video models: fully installed as of 2026-07-15.** All WAN 2.2 T2V + I2V
+  weights (text encoder, both diffusion model pairs, VAEs, LoRAs — ~65.6GB)
+  plus `wan2.1_t2v_1.3B_fp16.safetensors` (2.8GB, for the settled-default
+  workflow above) are present in `models/diffusion_models`, `models/vae`,
+  `models/text_encoders`, `models/loras`. `comfyui_video.operation_statuses()`
+  reports both `text_to_video`/`image_to_video` as `"available"`.
+- **Disk:** CT207's LXC quota was resized 100GB → 190GB (`pct resize 207
+  rootfs +90G`) to fit the WAN 2.2 stack; ~37GB free remained after. **RAM:**
+  resized 24GB → 40GB (`pct set 207 -memory 40960`) after an OOM kill during
+  the bundled 14B dual-expert workflow — see the RAM lesson above. Check
+  current headroom before adding more models:
+  `ssh root@192.168.1.79 'pct exec 207 -- df -h /; free -h'` (via LXC exec,
+  not inside the docker container).
 - Node inventory confirms this instance has the full WAN family of custom
   nodes installed (`WanImageToVideo`, `WanVaceToVideo`, etc. — 30+ WAN node
   types in `/object_info`) plus Kling/ByteDance/Grok API wrapper nodes (those
